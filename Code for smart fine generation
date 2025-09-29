@@ -1,0 +1,106 @@
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
+
+// GPS setup
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(2); // GPS on UART2 (GPIO16=RX, GPIO17=TX)
+
+// GSM setup
+HardwareSerial gsmSerial(1); // GSM on UART1 (GPIO26=RX, GPIO27=TX)
+
+// Buzzer
+#define BUZZER_PIN 4
+
+// Road definitions (use ranges)
+struct Road {
+  double latMin, latMax;
+  double lonMin, lonMax;
+  int speedLimit;
+};
+
+Road roads[] = {
+  {12.870097, 12.870483, 80.217707, 80.219621, 4}, // Road 1 (speed limit 40 km/h)
+  {13.0840, 13.0850, 80.2720, 80.2730, 3}  // Road 2 (speed limit 30 km/h)
+};
+
+int numRoads = 2;
+
+unsigned long buzzerStart = 0;
+bool buzzerActive = false;
+bool smsSent = false;
+
+void setup() {
+  Serial.begin(115200);
+
+  // GPS Serial
+  gpsSerial.begin(9600, SERIAL_8N1, 16, 17);
+
+  // GSM Serial
+  gsmSerial.begin(9600, SERIAL_8N1, 26, 27);
+
+  // Buzzer
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  Serial.println("ESP32 Overspeed Detection System Started...");
+}
+
+void loop() {
+  // Read GPS
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
+  }
+
+  if (gps.location.isUpdated() && gps.speed.isUpdated()) {
+    double lat = gps.location.lat();
+    double lon = gps.location.lng();
+    double speed = gps.speed.kmph();
+
+    Serial.printf("Lat: %.6f, Lon: %.6f, Speed: %.2f km/h\n", lat, lon, speed);
+
+    // Find which road
+    for (int i = 0; i < numRoads; i++) {
+      if (lat >= roads[i].latMin && lat <= roads[i].latMax &&
+          lon >= roads[i].lonMin && lon <= roads[i].lonMax) {
+
+        int limit = roads[i].speedLimit;
+        Serial.printf("On Road %d with speed limit %d km/h\n", i+1, limit);
+
+        if (speed > limit) {
+          int fine = (int)(speed - limit);
+          Serial.printf("Overspeed detected! Fine: Rs.%d\n", fine);
+
+          if (!buzzerActive) {
+            digitalWrite(BUZZER_PIN, HIGH);
+            buzzerStart = millis();
+            buzzerActive = true;
+            smsSent = false;
+          } else {
+            if (millis() - buzzerStart >= 8000 && !smsSent) {
+              digitalWrite(BUZZER_PIN, LOW);
+              sendFineSMS(fine);
+              smsSent = true;
+            }
+          }
+        } else {
+          digitalWrite(BUZZER_PIN, LOW);
+          buzzerActive = false;
+          smsSent = false;
+        }
+      }
+    }
+  }
+}
+ 
+
+void sendFineSMS(int fine) {
+  Serial.println("Sending Fine SMS...");
+  gsmSerial.println("AT+CMGF=1");  
+  delay(1000);
+  gsmSerial.println("AT+CMGS=\"+918778922465\""); // Replace with actual phone number
+  delay(1000);
+  gsmSerial.print("Overspeed detected! Fine = Rs.");
+  gsmSerial.print(fine);
+  gsmSerial.write(26); // Ctrl+Z
+  delay(3000);
+}
